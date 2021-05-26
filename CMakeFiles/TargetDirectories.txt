@@ -1,0 +1,5 @@
+/home/ipc21/ipc21s05/Parallel-Low-Poly-Image/CMakeFiles/rebuild_cache.dir
+/home/ipc21/ipc21s05/Parallel-Low-Poly-Image/CMakeFiles/edit_cache.dir
+/home/ipc21/ipc21s05/Parallel-Low-Poly-Image/source/CMakeFiles/rebuild_cache.dir
+/home/ipc21/ipc21s05/Parallel-Low-Poly-Image/source/CMakeFiles/edit_cache.dir
+/home/ipc21/ipc21s05/Parallel-Low-Poly-Image/source/CMakeFiles/ParaLowPoly.dir

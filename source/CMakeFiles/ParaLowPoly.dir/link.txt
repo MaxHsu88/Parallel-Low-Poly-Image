@@ -1,0 +1,1 @@
+/usr/bin/c++  -O3 -std=c++11 -rdynamic CMakeFiles/ParaLowPoly.dir/LowPolySolver.cpp.o -o ../ParaLowPoly  -Wl,-rpath,/home/ipc21/ipc21s05/opencv/lib /opt/cuda/lib64/libcudart_static.a -ldl -lrt /home/ipc21/ipc21s05/opencv/lib/libopencv_imgcodecs.so.3.4.3 /home/ipc21/ipc21s05/opencv/lib/libopencv_imgproc.so.3.4.3 -lpthread /home/ipc21/ipc21s05/opencv/lib/libopencv_core.so.3.4.3 
