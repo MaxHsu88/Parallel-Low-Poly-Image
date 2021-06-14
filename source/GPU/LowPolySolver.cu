@@ -38,7 +38,7 @@ int main(int argc, char **argv)
     cv::cvtColor(img, img_grey, cv::COLOR_BGR2GRAY);
 
     int totalPixel = height * width;
-    uint8_t *gradient_img = (uint8_t *)malloc(sizeof(uint8_t) * height * width);
+    uint8_t *gradient_img = (uint8_t *)malloc(sizeof(uint8_t) * totalPixel);
     uint8_t *grey_img = img_grey.data;
 
     select_vertices_GPU(grey_img, gradient_img, height, width);
@@ -49,41 +49,30 @@ int main(int argc, char **argv)
     cv::imwrite( output_folder + "/GPU_edge.jpg", edge_output );
     // ****************************
 
-    // float gradThreshold = 20;
-    // float edgeProb = 0.005;
-    // float nonEdgeProb = 0.0001;
-    // float boundProb = 0.1;
-    // vector<Point> vertices = selectVertices(gradient_img, height, width, gradThreshold, edgeProb, nonEdgeProb, boundProb);
+    Point *owner_map_CPU = (Point *)malloc(sizeof(Point) * totalPixel);
+    vector<Triangle> triangles;
+    delauney_GPU(owner_map_CPU, triangles, height, width);
 
-    // // ****************************
-    // // for output vertex image
-    // // cv::Mat vertex_output = drawVert(vertices, height, width);
-    // // cv::imwrite( output_folder + "/vertex.jpg", vertex_output );
-    // // ****************************
+    // ****************************
+    // for output voroni images
+    cv::Mat voroni_output = drawVoroni(owner_map_CPU, height, width);
+    cv::imwrite( output_folder + "/GPU_voroni.jpg", voroni_output );
+    // for output voroni + triangle images
+    cv::Mat voroni_tri_output = drawTriangles(triangles, voroni_output, true);
+    cv::imwrite( output_folder + "/GPU_voroni_triangle.jpg", voroni_tri_output );
+    // for output triangle on original images
+    cv::Mat orig_tri_output = drawTriangles(triangles, img, true);
+    cv::imwrite( output_folder + "/GPU_original_triangle.jpg", orig_tri_output );
+    // ****************************
 
-    // vector<int> owner(height * width, -1);
-    // vector<Triangle> triangles = Delauney(vertices, owner, height, width);
-
-    // // ****************************
-    // // for output voroni images
-    // int num_vertices = vertices.size();
-    // cv::Mat voroni_output = drawVoroni(owner, num_vertices, height, width);
-    // cv::imwrite( output_folder + "/voroni.jpg", voroni_output );
-    // // for output voroni + triangle images
-    // cv::Mat voroni_tri_output = drawTriangles(triangles, voroni_output, true);
-    // cv::imwrite( output_folder + "/voroni_triangle.jpg", voroni_tri_output );
-    // // for output triangle on original images
-    // cv::Mat orig_tri_output = drawTriangles(triangles, img, true);
-    // cv::imwrite( output_folder + "/original_triangle.jpg", orig_tri_output );
-    // // ****************************
-
-    // // ****************************
-    // // for output final image
-    // cv::Mat final_output = drawLowPoly(triangles, img, height, width);
-    // cv::imwrite( output_folder + "/final.jpg", final_output );
+    // ****************************
+    // for output final image
+    cv::Mat final_output = drawLowPoly_GPU(img);
+    cv::imwrite( output_folder + "/GPU_final.jpg", final_output );
     // ****************************
 
     free(gradient_img);
+    free(owner_map_CPU);
 
     return 0;
 }

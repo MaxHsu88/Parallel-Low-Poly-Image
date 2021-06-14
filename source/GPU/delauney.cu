@@ -1,11 +1,23 @@
 #include <vector>
 #include <unordered_set>
+#include <stdio.h>
+#include <iostream>
 
-#include "cuda.h"
+#include <cuda.h>
+#include <curand_kernel.h>
+
+#include "opencv2/core.hpp"
+#include "opencv2/highgui.hpp"
+#include "opencv2/imgcodecs.hpp"
+#include "opencv2/imgproc/imgproc.hpp"
 
 #include "point.h"
 #include "triangle.h"
 #include "delauney.h"
+
+using namespace std;
+
+#define SEED 1234
 
 #define MASK_N 2
 #define MASK_X 3
@@ -19,14 +31,25 @@ __constant__ int yBound = MASK_Y / 2;
 
 uint8_t *grey_img_GPU;
 uint8_t *gradient_img_GPU;
-uint8_t *owner_map_GPU;
+Point *owner_map_GPU;
+curandState *rand_state;
+int *triangle_count_GPU;
+int *triangle_prefix_sum_GPU;
+Triangle *triangles_GPU;
+uint8_t *orig_img_GPU;
+uint8_t *color_img_GPU;
+
+int total_triangles;
 
 
-inline cudaError_t checkCuda(cudaError_t result) {
-    if (result != cudaSuccess) {
-        fprintf(stderr, "CUDA Runtime Error: %s\n", cudaGetErrorString(result));
+#define checkCuda(ans) { gpuAssert((ans), __FILE__, __LINE__); }
+inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=true)
+{
+    if (code != cudaSuccess)
+    {
+        fprintf(stderr,"GPUassert: %s %s %d\n", cudaGetErrorString(code), file, line);
+        if (abort) exit(code);
     }
-    return result;
 }
 
 
@@ -68,119 +91,125 @@ void get_gradient_kernel(uint8_t *grey_img, uint8_t *gradient_img, int height, i
 }
 
 
-vector<Point> select_vertices_kernel(uint8_t *grad, int height, int width, float gradThreshold, float edgeProb, float nonEdgeProb, float boundProb)
+// Random number generator for CUDA
+// Reference: https://docs.nvidia.com/cuda/curand/device-api-overview.html#device-api-example
+__global__
+void setup_kernel(curandState *state)
 {
-    vector<Point> vertices;
-    uint8_t gradVal;
-
-    // four corners must be in the set
-    Point p1(0, 0);
-    Point p2(0, height-1);
-    Point p3(width-1, 0);
-    Point p4(width-1, height-1);
-
-    vertices.push_back(p1);
-    vertices.push_back(p2);
-    vertices.push_back(p3);
-    vertices.push_back(p4);
-
-    // boundary area conditions
-    for (int row = 1; row < height-1; row++)
-    {
-        // left-most boundary
-        double randNum = (double) rand() / RAND_MAX;
-        if (randNum < boundProb)
-        {
-            Point p(0, row);
-            vertices.push_back(p);
-        }
-        // right-most boundary
-        randNum = (double) rand() / RAND_MAX;
-        if (randNum < boundProb)
-        {
-            Point p(width-1, row);
-            vertices.push_back(p);
-        }
-    }
-    for (int col = 1; col < width-1; col++)
-    {
-        // up-most boundary
-        double randNum = (double) rand() / RAND_MAX;
-        if (randNum < boundProb)
-        {
-            Point p(col, 0);
-            vertices.push_back(p);
-        }
-        // down-most boundary
-        randNum = (double) rand() / RAND_MAX;
-        if (randNum < boundProb)
-        {
-            Point p(col, height-1);
-            vertices.push_back(p);
-        }
-    }
-
-    // inner area conditions
-    for (int i = 1; i < height-1; i++)
-    {
-        for (int j = 1; j < width-1; j++)
-        {
-            gradVal = grad[i * width + j];
-            double randNum = (double) rand() / RAND_MAX;
-            if (gradVal > gradThreshold)
-            {
-                // Edge vertex
-                if (randNum < edgeProb)
-                {
-                    Point p(j, i);
-                    vertices.push_back(p);
-                }
-            }
-            else
-            {
-                // Non-edge vertex
-                if (randNum < nonEdgeProb)
-                {
-                    Point p(j, i);
-                    vertices.push_back(p);
-                }
-            }
-        }
-    }
-
-    return vertices;
+    int id = threadIdx.x + blockIdx.x * blockDim.x;
+    /* Each thread gets same seed, a different sequence
+       number, no offset */
+    /* faster version here, reference: https://forums.developer.nvidia.com/t/curand-initialization-time/19758/2 */
+    curand_init( (SEED << 20) + id, 0, 0, &state[id]);
+    /* random generation setup would be slow in this way */
+    // curand_init(SEED, id, 0, &state[id]);
 }
 
 
-void select_vertices_GPU(uint8_t *grey_img_CPU, uint8_t *result_img, int height, int width)
+
+__global__
+void select_vertices_kernel(uint8_t *grad, Point *owner_map, curandState *rand_state, int height, int width, float gradThreshold, float edgeProb, float nonEdgeProb, float boundProb)
+{
+    int id = threadIdx.x + blockIdx.x * blockDim.x;
+    int y = id / width;
+    int x = id % width;
+
+    uint8_t gradVal;
+
+    // out of bounds
+    if (y < 0 || y >= height || x < 0 || x >= width)
+        return;
+
+    // four corners must be in the set
+    if ((y == 0 || y == height-1) && (x == 0 || x == width-1))
+    {
+        Point p;
+        p.x = x;
+        p.y = y;
+        owner_map[id] = p;
+    }
+    else
+    {
+        curandState localState = rand_state[id];
+        float randNum = curand_uniform(&localState);
+
+        // printf("%f\n", randNum);
+
+        // inner area
+        if (y > 0 && y < height-1 && x > 0 && x < width-1)
+        {
+            gradVal = grad[y * width + x];
+            if (gradVal > gradThreshold && randNum < edgeProb)
+            {
+                // Edge vertex
+                Point p;
+                p.x = x;
+                p.y = y;
+                owner_map[id] = p;
+            }
+            else if (randNum < nonEdgeProb)
+            {
+                // Non-edge vertex
+                Point p;
+                p.x = x;
+                p.y = y;
+                owner_map[id] = p;
+            }
+        }
+        // boundary area
+        else
+        {
+            if (randNum < boundProb)
+            {
+                Point p;
+                p.x = x;
+                p.y = y;
+                owner_map[id] = p;
+            }
+        }
+    }
+}
+
+
+void select_vertices_GPU(uint8_t *grey_img_CPU, uint8_t *result_image, int height, int width)
 {
     int total_pixels = height * width;
 
     // GPU memory allocation
-    cudaMalloc(&grey_img_GPU, total_pixels * sizeof(uint8_t));
-    cudaMalloc(&gradient_img_GPU, total_pixels * sizeof(uint8_t));
-    cudaMalloc(&owner_map_GPU, total_pixels * sizeof(int));
+    checkCuda( cudaMalloc(&grey_img_GPU, total_pixels * sizeof(uint8_t)) );
+    checkCuda( cudaMalloc(&gradient_img_GPU, total_pixels * sizeof(uint8_t)) );
+    checkCuda( cudaMalloc(&owner_map_GPU, total_pixels * sizeof(Point)) );
+    checkCuda( cudaMalloc(&rand_state, total_pixels * sizeof(curandState)) );
 
     // Data transfer
-    cudaMemcpy(grey_img_GPU, grey_img_CPU, total_pixels * sizeof(uint8_t), cudaMemcpyHostToDevice);
+    checkCuda( cudaMemcpy(grey_img_GPU, grey_img_CPU, total_pixels * sizeof(uint8_t), cudaMemcpyHostToDevice) );
+    // Init for owner
+    checkCuda( cudaMemset(owner_map_GPU, -1, total_pixels * sizeof(Point)) );
 
     // Edge detection filtering
-    int GRIDSIZE = 32;
-    dim3 dimBlock(GRIDSIZE, GRIDSIZE, 1);
-    dim3 dimGrid(ceil(width/(float)GRIDSIZE), ceil(height/(float)GRIDSIZE), 1);
+    int BLOCKSIZE = 32;
+    dim3 dimBlock(BLOCKSIZE, BLOCKSIZE, 1);
+    dim3 dimGrid(ceil(width/(float)BLOCKSIZE), ceil(height/(float)BLOCKSIZE), 1);
     get_gradient_kernel<<<dimGrid, dimBlock>>>(grey_img_GPU, gradient_img_GPU, height, width);
 
-    // get the result back
-    cudaMemcpy(result_img, gradient_img_GPU, total_pixels * sizeof(uint8_t), cudaMemcpyDeviceToHost);
+    // Init random generators
+    int GRIDSIZE = (total_pixels + BLOCKSIZE - 1) / BLOCKSIZE;
+    setup_kernel<<<GRIDSIZE, BLOCKSIZE>>>(rand_state);
+
+    // Selecting vertices
+    float gradThreshold = 20;
+    float edgeProb = 0.005;
+    float nonEdgeProb = 0.0001;
+    float boundProb = 0.1;
+    select_vertices_kernel<<<GRIDSIZE, BLOCKSIZE>>>(gradient_img_GPU, owner_map_GPU, rand_state, 
+                            height, width, gradThreshold, edgeProb, nonEdgeProb, boundProb);
 
     cudaDeviceSynchronize();
 
-    // Selecting vertices
-
-    // Free memory
-    cudaFree(grey_img_GPU);
-    cudaFree(gradient_img_GPU);
-    cudaFree(owner_map_GPU);
+    // ********************************
+    // for testing output result
+    checkCuda( cudaMemcpy(result_image, gradient_img_GPU, total_pixels * sizeof(uint8_t), cudaMemcpyDeviceToHost) );
+    // ********************************
 }
 
 
@@ -198,30 +227,167 @@ int ceil_power2(int v)
     return v;
 }
 
+__device__
 inline int convert_idx(Point p, int width)
 {
     return p.y * width + p.x;
 }
 
+__device__
 inline bool out_of_bound(Point p, int height, int width)
 {
     return !(p.x >= 0 && p.x < width && p.y >= 0 && p.y < height);
 }
 
 
-
-vector<Triangle> Delauney(vector<Point> &vertices, vector<int> &owner, int height, int width)
+__global__
+void jump_flooding_kernel(Point *owner_map, int step_size, int height, int width)
 {
-    // All 8 directions to check from the vertex
-    const Point all_dir[8] = {Point(1, 0), Point(1, 1), Point(0, 1), Point(-1, 1),
-                                Point(-1, 0), Point(-1, -1), Point(0, -1), Point(1, -1)};
+    int x = threadIdx.x + blockIdx.x * blockDim.x;
+    int y = threadIdx.y + blockIdx.y * blockDim.y;
 
-    // Assign each sampled vertex's index as its located pixel's owner
-    for (int i = 0; i < vertices.size(); i++)
+    // All 8 directions to check from the vertex
+    const Point all_dir[] = {Point(1, 0), Point(1, 1), Point(0, 1), Point(-1, 1),
+        Point(-1, 0), Point(-1, -1), Point(0, -1), Point(1, -1)};
+
+    if (y >= 0 && y < height && x >= 0 && x < width)
     {
-        Point vertex = vertices[i];
-        owner[convert_idx(vertex, width)] = i;
+        Point cur_point;
+        cur_point.x = x;
+        cur_point.y = y;
+        // Check for all possible directions to neighbor points
+        for (int i = 0; i < 8; i++)
+        {
+            Point cur_dir = all_dir[i];
+            Point cur_looking = cur_point + cur_dir * step_size;
+            // If this point is out of bounds, skip it
+            if (out_of_bound(cur_looking, height, width))
+            {
+                continue;
+            }
+            // If this point is not owned by anyone, skip it
+            if (owner_map[convert_idx(cur_looking, width)].isInvalid())
+            {
+                continue;
+            }
+
+            // Update owner in cur_point only when
+            // 1. cur_point is NOT owned by anyone (owner = NULL)
+            // 2. cur_point has shorter distance to cur_looking's owner than previous owner
+            Point cur_owner = owner_map[convert_idx(cur_point, width)];
+            int tmp_dist = distance(owner_map[convert_idx(cur_looking, width)], cur_point);
+            if (cur_owner.isInvalid() || tmp_dist < distance(cur_owner, cur_point))
+            {
+                owner_map[convert_idx(cur_point, width)] = owner_map[convert_idx(cur_looking, width)];
+            }
+        }
     }
+}
+
+
+__device__
+void check_triangles(Point *owner_map, int *num_triangles, Point cur_point, Point test[])
+{
+    Point corner_dir[3] = {Point(0, 1), Point(1, 0), Point(1, 1)};
+    
+    // setup for first point
+    int num_colors = 1;
+    test[0] = cur_point;
+
+    // test all 4 points
+    for (int i = 0; i < 3; i++)
+    {
+        Point neighbor_point = cur_point + corner_dir[i];
+        int is_diff = true;
+        // check the buffer for distinct points
+        for (int j = 0; j < num_colors; j++)
+        {
+            // same point can be found in buffer
+            if (neighbor_point == test[j])
+            {
+                is_diff = false;
+                break;
+            }
+        }
+        if (is_diff)
+        {
+            test[num_colors] = neighbor_point;
+            num_colors++;
+        }
+    }
+
+    if (num_colors == 3) {
+        *num_triangles = 1;
+    } else if (num_colors == 4) {
+        *num_triangles = 2;
+    } else {
+        *num_triangles = 0;
+    }
+}
+
+
+__global__
+void triangle_count_kernel(int *count, Point *owner_map, int height, int width)
+{
+    int x = threadIdx.x + blockIdx.x * blockDim.x;
+    int y = threadIdx.y + blockIdx.y * blockDim.y;
+
+    if (y >= 0 && y < height-1 && x >= 0 && x < width-1)
+    {
+        int num_triangles = 0;
+        Point cur_point(x, y);
+        Point test[4] = {Point(-1,-1), Point(-1,-1), Point(-1,-1), Point(-1,-1)};
+        check_triangles(owner_map, &num_triangles, cur_point, test);
+        count[y * width + x] = num_triangles;
+    }
+}
+
+
+__global__
+void triangle_generate_kernel(Triangle *triangles, Point *owner_map, int *prefix_sum, int height, int width)
+{
+    int x = threadIdx.x + blockIdx.x * blockDim.x;
+    int y = threadIdx.y + blockIdx.y * blockDim.y;
+
+    if (y >= 0 && y < height-1 && x >= 0 && x < width-1)
+    {
+        int num_triangles = 0;
+        Point cur_point(x, y);
+        Point test[4] = {Point(-1,-1), Point(-1,-1), Point(-1,-1), Point(-1,-1)};
+        check_triangles(owner_map, &num_triangles, cur_point, test);
+
+        if (num_triangles == 1)
+        {
+            Triangle triangle;
+            triangle = Triangle(owner_map[convert_idx(test[0], width)],
+                                owner_map[convert_idx(test[1], width)],
+                                owner_map[convert_idx(test[2], width)]);
+            int triangle_index = prefix_sum[y * width + x] - 1;
+            triangles[triangle_index] = triangle;
+        }
+        else if (num_triangles == 2)
+        {
+            Triangle triangle1, triangle2;
+            triangle1 = Triangle(owner_map[convert_idx(test[0], width)],
+                                owner_map[convert_idx(test[1], width)],
+                                owner_map[convert_idx(test[2], width)]);
+            triangle2 = Triangle(owner_map[convert_idx(test[1], width)],
+                                owner_map[convert_idx(test[2], width)],
+                                owner_map[convert_idx(test[3], width)]);
+            int triangle_index = prefix_sum[y * width + x] - 1;
+            triangles[triangle_index] = triangle1;
+            triangles[triangle_index + 1] = triangle2;
+        }
+    }
+}
+
+
+void delauney_GPU(Point *owner_map_CPU, vector<Triangle> &triangles_list, int height, int width)
+{
+    int total_pixels = height * width;
+    int BLOCKSIZE = 32;
+    dim3 dimBlock(BLOCKSIZE, BLOCKSIZE, 1);
+    dim3 dimGrid(ceil(width/(float)BLOCKSIZE), ceil(height/(float)BLOCKSIZE), 1);
 
     // **************************************
     // Jump-Flooding algorithm for constructing voronoi diagram
@@ -232,92 +398,150 @@ vector<Triangle> Delauney(vector<Point> &vertices, vector<int> &owner, int heigh
     // Iterate possible step sizes
     for (int step_size = init_step_size; step_size >= 1; step_size /= 2)
     {
-        // Check for all the pixels
-        for (int y = 0; y < height; y++)
-        {
-            for (int x = 0; x < width; x++)
-            {
-                Point cur_point(x, y);
-                // Check for all possible directions to neighbor points
-                for (int i = 0; i < 8; i++)
-                {
-                    Point cur_dir = all_dir[i];
-                    Point cur_looking = cur_point + cur_dir * step_size;
-                    // If this point is out of bounds, skip it
-                    if (out_of_bound(cur_looking, height, width))
-                    {
-                        continue;
-                    }
-                    // If this point is not owned by anyone, skip it
-                    if (owner[convert_idx(cur_looking, width)] == -1)
-                    {
-                        continue;
-                    }
-
-                    // Update owner in cur_point only when
-                    // 1. cur_point is NOT owned by anyone (owner = -1)
-                    // 2. cur_point has shorter distance to cur_looking's owner than previous owner
-                    int cur_owner = owner[convert_idx(cur_point, width)];
-                    int tmp_dist = distance(vertices[owner[convert_idx(cur_looking, width)]], cur_point);
-                    if (cur_owner == -1 || tmp_dist < distance(vertices[cur_owner], cur_point))
-                    {
-                        owner[convert_idx(cur_point, width)] = owner[convert_idx(cur_looking, width)];
-                    }
-                }
-            }
-        }
+        jump_flooding_kernel<<<dimGrid, dimBlock>>>(owner_map_GPU, step_size, height, width);
+        checkCuda( cudaDeviceSynchronize() );
     }
 
     // **************************************
     // Building triangles from the voronoi diagram
+    // (1) get triangle count for each pixel
+    // (2) compute prefix sum of the number of triangles
+    // (3) perform triangulation
     // **************************************
-    vector<Triangle> triangles;
-    const Point corner_dir[3] = {Point(0, 1), Point(1, 0), Point(1, 1)};
-    // Check for all the pixels
-    for (int y = 0; y < height - 1; y++)
+
+    // (1) get triangle count for each pixel
+    checkCuda( cudaMalloc(&triangle_count_GPU, total_pixels * sizeof(int)) );
+    triangle_count_kernel<<<dimGrid, dimBlock>>>(triangle_count_GPU, owner_map_GPU, height, width);
+
+    // (2) compute prefix sum of the number of triangles
+    // Note: Get prefix sum in CPU side (TODO)
+    int *triangle_prefix_sum_CPU = (int *)malloc(total_pixels * sizeof(int));
+    checkCuda( cudaMemcpy(triangle_prefix_sum_CPU, triangle_count_GPU, total_pixels * sizeof(int), cudaMemcpyDeviceToHost) );
+    checkCuda( cudaDeviceSynchronize() );
+    for (int i = 1; i < total_pixels; i++)
     {
-        for (int x = 0; x < width - 1; x++)
+        triangle_prefix_sum_CPU[i] = triangle_prefix_sum_CPU[i] + triangle_prefix_sum_CPU[i-1];
+    }
+    total_triangles = triangle_prefix_sum_CPU[total_pixels-1];
+    checkCuda( cudaMalloc(&triangle_prefix_sum_GPU, total_pixels * sizeof(int)) );
+    checkCuda( cudaMemcpy(triangle_prefix_sum_GPU, triangle_prefix_sum_CPU, total_pixels * sizeof(int), cudaMemcpyHostToDevice) );
+    checkCuda( cudaDeviceSynchronize() );
+
+    // (3) perform triangulation
+    checkCuda( cudaMalloc(&triangles_GPU, total_triangles * sizeof(Triangle)) );
+    triangle_generate_kernel<<<dimGrid, dimBlock>>>(triangles_GPU, owner_map_GPU, triangle_prefix_sum_GPU, height, width);
+
+    free(triangle_prefix_sum_CPU);
+
+    // ********************************
+    // for testing output result
+    checkCuda( cudaMemcpy(owner_map_CPU, owner_map_GPU, sizeof(Point) * total_pixels, cudaMemcpyDeviceToHost) );
+
+    Triangle *triangles_CPU = (Triangle *)malloc(sizeof(Triangle) * total_triangles);
+    checkCuda( cudaMemcpy(triangles_CPU, triangles_GPU, sizeof(Triangle) * total_triangles, cudaMemcpyDeviceToHost) );
+    for (int i = 0; i < total_triangles; i++)
+        triangles_list.push_back(triangles_CPU[i]);
+    free(triangles_CPU);
+    // ********************************
+}
+
+
+// **************************************
+// This code checks if a point (pt) lies in a triangle (v1, v2, v3)
+// Reference: https://stackoverflow.com/questions/2049582/how-to-determine-if-a-point-is-in-a-2d-triangle
+__device__ float sign(Point p1, Point p2, Point p3)
+{
+    return (p1.x - p3.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p3.y);
+}
+
+__device__ bool PointInTriangle(Point pt, Point v1, Point v2, Point v3)
+{
+    float d1, d2, d3;
+    bool has_neg, has_pos;
+
+    d1 = sign(pt, v1, v2);
+    d2 = sign(pt, v2, v3);
+    d3 = sign(pt, v3, v1);
+
+    has_neg = (d1 < 0) || (d2 < 0) || (d3 < 0);
+    has_pos = (d1 > 0) || (d2 > 0) || (d3 > 0);
+
+    return !(has_neg && has_pos);
+}
+// **************************************
+
+
+__global__
+void draw_lowpoly_kernel(uint8_t *orig_img, uint8_t *color_img, Triangle *triangles, int total_triangles, int width)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx > total_triangles)
+        return;
+
+    Triangle triangle = triangles[idx];
+    // Use center pixel of a triangle to color it
+    Point pt_c = triangle.get_center();
+    // Find bounding box region of a triangle
+    int minX = min(triangle.points[0].x, min(triangle.points[1].x, triangle.points[2].x));
+    int maxX = max(triangle.points[0].x, max(triangle.points[1].x, triangle.points[2].x));
+    int minY = min(triangle.points[0].y, min(triangle.points[1].y, triangle.points[2].y));
+    int maxY = max(triangle.points[0].y, max(triangle.points[1].y, triangle.points[2].y));
+
+    int img_idx = (pt_c.y * width + pt_c.x) * 3;
+    // Iterate for the pixels in the box region
+    for (int y = minY; y <= maxY; y++)
+    {
+        for (int x = minX; x <= maxX; x++)
         {
-            // Push the owners of itself and its neighboring point to the set
-            unordered_set<int> owner_set;
-            Point cur_point(x, y);
-            owner_set.insert(owner[convert_idx(cur_point, width)]);
-            for (int i = 0; i < 3; i++)
+            Point pt_tmp(x, y);
+            // Check if the pixels lies in the triangle
+            if (PointInTriangle(pt_tmp, triangle.points[0], triangle.points[1], triangle.points[2]))
             {
-                Point neighbor_point = cur_point + corner_dir[i];
-                owner_set.insert(owner[convert_idx(neighbor_point, width)]);
-            }
-
-            // If 3 distinct owners in the corner, there exists 1 triangle
-            if (owner_set.size() == 3)
-            {
-                Triangle triangle;
-                int k = 0;
-                for (const auto &p: owner_set)
-                {
-                    triangle.points[k] = vertices[p];
-                    k++;
-                }
-                triangles.push_back(triangle);
-            }
-
-            // If 4 distinct owners in the corner, there exists 2 triangles
-            if (owner_set.size() == 4)
-            {
-                Triangle triangle1, triangle2;
-                triangle1 = Triangle(vertices[owner[convert_idx(cur_point, width)]],
-                                    vertices[owner[convert_idx(cur_point + corner_dir[0], width)]],
-                                    vertices[owner[convert_idx(cur_point + corner_dir[1], width)]]);
-                
-                triangle2 = Triangle(vertices[owner[convert_idx(cur_point + corner_dir[0], width)]],
-                                    vertices[owner[convert_idx(cur_point + corner_dir[1], width)]],
-                                    vertices[owner[convert_idx(cur_point + corner_dir[2], width)]]);
-
-                triangles.push_back(triangle1);
-                triangles.push_back(triangle2);
+                int tri_img_idx = (y * width + x) * 3;
+                // Assign the color of ceter pixel of the triangle to current pixel
+                color_img[tri_img_idx] = orig_img[img_idx];
+                color_img[tri_img_idx + 1] = orig_img[img_idx + 1];
+                color_img[tri_img_idx + 2] = orig_img[img_idx + 2];
             }
         }
     }
 
-    return triangles;
+}
+
+
+cv::Mat drawLowPoly_GPU(cv::Mat &img)
+{
+    int height = img.rows;
+    int width = img.cols;
+    int total_pixels = height * width;
+
+    checkCuda( cudaMalloc(&orig_img_GPU, sizeof(uint8_t) * total_pixels * 3) );
+    checkCuda( cudaMalloc(&color_img_GPU, sizeof(uint8_t) * total_pixels * 3) );
+    checkCuda( cudaMemcpy(orig_img_GPU, img.data, sizeof(uint8_t) * total_pixels * 3, cudaMemcpyHostToDevice) );
+
+    int BLOCKSIZE = 256;
+    int GRIDSIZE = (total_triangles + BLOCKSIZE - 1) / BLOCKSIZE;
+    draw_lowpoly_kernel<<<GRIDSIZE, BLOCKSIZE>>>(orig_img_GPU, color_img_GPU, triangles_GPU, total_triangles, width);
+    checkCuda( cudaDeviceSynchronize() );
+
+    cv::Mat color_img;
+    color_img.create(height, width, CV_8UC3);
+    cudaMemcpy(color_img.data, color_img_GPU, sizeof(uint8_t) * total_pixels * 3, cudaMemcpyDeviceToHost);
+
+    return color_img;
+}
+
+
+
+void free_gpu_memory()
+{
+    checkCuda( cudaFree(grey_img_GPU) );
+    checkCuda( cudaFree(gradient_img_GPU) );
+    checkCuda( cudaFree(owner_map_GPU) );
+    checkCuda( cudaFree(rand_state) );
+    checkCuda( cudaFree(triangle_count_GPU) );
+    checkCuda( cudaFree(triangle_prefix_sum_GPU) );
+    checkCuda( cudaFree(triangles_GPU) );
+    checkCuda( cudaFree(orig_img_GPU) );
+    checkCuda( cudaFree(color_img_GPU) );
 }

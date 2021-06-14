@@ -11,61 +11,61 @@ using namespace std;
 // **************************************
 // This code checks if a point (pt) lies in a triangle (v1, v2, v3)
 // Reference: https://stackoverflow.com/questions/2049582/how-to-determine-if-a-point-is-in-a-2d-triangle
-float sign(Point p1, Point p2, Point p3)
-{
-    return (p1.x - p3.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p3.y);
-}
+// float sign(Point p1, Point p2, Point p3)
+// {
+//     return (p1.x - p3.x) * (p2.y - p3.y) - (p2.x - p3.x) * (p1.y - p3.y);
+// }
 
-bool PointInTriangle(Point pt, Point v1, Point v2, Point v3)
-{
-    float d1, d2, d3;
-    bool has_neg, has_pos;
+// bool PointInTriangle(Point pt, Point v1, Point v2, Point v3)
+// {
+//     float d1, d2, d3;
+//     bool has_neg, has_pos;
 
-    d1 = sign(pt, v1, v2);
-    d2 = sign(pt, v2, v3);
-    d3 = sign(pt, v3, v1);
+//     d1 = sign(pt, v1, v2);
+//     d2 = sign(pt, v2, v3);
+//     d3 = sign(pt, v3, v1);
 
-    has_neg = (d1 < 0) || (d2 < 0) || (d3 < 0);
-    has_pos = (d1 > 0) || (d2 > 0) || (d3 > 0);
+//     has_neg = (d1 < 0) || (d2 < 0) || (d3 < 0);
+//     has_pos = (d1 > 0) || (d2 > 0) || (d3 > 0);
 
-    return !(has_neg && has_pos);
-}
+//     return !(has_neg && has_pos);
+// }
 // **************************************
 
 
 // Draw the final triangulation images (with color)
-cv::Mat drawLowPoly(vector<Triangle> &triangles, cv::Mat &orig_img, int height, int width)
-{
-    cv::Mat out_img = cv::Mat(height, width, CV_8UC3, cv::Scalar(0, 0, 0));
-    // Iterate for all triangles
-    for (int i = 0; i < triangles.size(); i++)
-    {
-        Triangle triangle = triangles[i];
-        // Use center pixel of a triangle to color it
-        Point pt_c = triangle.get_center();
-        // Find bounding box region of a triangle
-        int minX = min(triangle.points[0].x, min(triangle.points[1].x, triangle.points[2].x));
-        int maxX = max(triangle.points[0].x, max(triangle.points[1].x, triangle.points[2].x));
-        int minY = min(triangle.points[0].y, min(triangle.points[1].y, triangle.points[2].y));
-        int maxY = max(triangle.points[0].y, max(triangle.points[1].y, triangle.points[2].y));
-        // Iterate for the pixels in the box region
-        for (int y = minY; y <= maxY; y++)
-        {
-            for (int x = minX; x <= maxX; x++)
-            {
-                Point pt_tmp(x, y);
-                // Check if the pixels lies in the triangle
-                if (PointInTriangle(pt_tmp, triangle.points[0], triangle.points[1], triangle.points[2]))
-                {
-                    // Assign the color of ceter pixel of the triangle to current pixel
-                    out_img.at<cv::Vec3b>(y, x) = orig_img.at<cv::Vec3b>(pt_c.y, pt_c.x);
-                }
-            }
-        }
-    }
+// cv::Mat drawLowPoly(vector<Triangle> &triangles, cv::Mat &orig_img, int height, int width)
+// {
+//     cv::Mat out_img = cv::Mat(height, width, CV_8UC3, cv::Scalar(0, 0, 0));
+//     // Iterate for all triangles
+//     for (int i = 0; i < triangles.size(); i++)
+//     {
+//         Triangle triangle = triangles[i];
+//         // Use center pixel of a triangle to color it
+//         Point pt_c = triangle.get_center();
+//         // Find bounding box region of a triangle
+//         int minX = min(triangle.points[0].x, min(triangle.points[1].x, triangle.points[2].x));
+//         int maxX = max(triangle.points[0].x, max(triangle.points[1].x, triangle.points[2].x));
+//         int minY = min(triangle.points[0].y, min(triangle.points[1].y, triangle.points[2].y));
+//         int maxY = max(triangle.points[0].y, max(triangle.points[1].y, triangle.points[2].y));
+//         // Iterate for the pixels in the box region
+//         for (int y = minY; y <= maxY; y++)
+//         {
+//             for (int x = minX; x <= maxX; x++)
+//             {
+//                 Point pt_tmp(x, y);
+//                 // Check if the pixels lies in the triangle
+//                 if (PointInTriangle(pt_tmp, triangle.points[0], triangle.points[1], triangle.points[2]))
+//                 {
+//                     // Assign the color of ceter pixel of the triangle to current pixel
+//                     out_img.at<cv::Vec3b>(y, x) = orig_img.at<cv::Vec3b>(pt_c.y, pt_c.x);
+//                 }
+//             }
+//         }
+//     }
 
-    return out_img;
-}
+//     return out_img;
+// }
 
 
 // Draw the edge detection images
@@ -84,28 +84,29 @@ cv::Mat drawEdges(uint8_t* gradient_img, int height, int width)
 
 
 // Draw the selected vertex images
-cv::Mat drawVert(vector<Point> &vertices, int height, int width)
-{
-    cv::Mat vertex_output = cv::Mat(height, width, CV_8UC1, cv::Scalar(0));
-    for (int i = 0; i < vertices.size(); ++i)
-    {
-        Point p = vertices[i];
-        int x = p.x;
-        int y = p.y;
-        vertex_output.at<uchar>(y, x) = 255;
-    }
-    return vertex_output;
-}
+// cv::Mat drawVert(vector<Point> &vertices, int height, int width)
+// {
+//     cv::Mat vertex_output = cv::Mat(height, width, CV_8UC1, cv::Scalar(0));
+//     for (int i = 0; i < vertices.size(); ++i)
+//     {
+//         Point p = vertices[i];
+//         int x = p.x;
+//         int y = p.y;
+//         vertex_output.at<uchar>(y, x) = 255;
+//     }
+//     return vertex_output;
+// }
 
 
 // Draw the voroni images
-cv::Mat drawVoroni(vector<int> &owner, int num_vertices, int height, int width)
+cv::Mat drawVoroni(Point *owner, int height, int width)
 {
     cv::Mat voroni_output = cv::Mat(height, width, CV_8UC3, cv::Scalar(0, 0, 0));
     
     // Randomized RGB color for each region
-    vector<cv::Vec3b> vertices_color(num_vertices);
-    for (int i = 0; i < num_vertices; i++)
+    int total_pixels = height * width;
+    vector<cv::Vec3b> vertices_color(total_pixels);
+    for (int i = 0; i < total_pixels; i++)
     {
         vertices_color[i][0] = rand() % 256;
         vertices_color[i][1] = rand() % 256;
@@ -117,7 +118,8 @@ cv::Mat drawVoroni(vector<int> &owner, int num_vertices, int height, int width)
     {
         for (int j = 0; j < width; j++)
         {
-            voroni_output.at<cv::Vec3b>(i, j) = vertices_color[owner[i * width + j]];
+            Point p = owner[i * width + j];
+            voroni_output.at<cv::Vec3b>(i, j) = vertices_color[p.y * width + p.x];
         }
     }
 

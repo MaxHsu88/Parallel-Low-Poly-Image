@@ -13,7 +13,8 @@ struct Point
     CUDA_ENV
     Point(int x_, int y_);
 
-    // bool isInvalid();
+    CUDA_ENV
+    bool isInvalid();
 };
 
 CUDA_ENV

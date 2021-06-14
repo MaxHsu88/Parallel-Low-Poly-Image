@@ -12,6 +12,7 @@
 
 using namespace std;
 
-vector<Triangle> Delauney(vector<Point> &vertices, vector<int> &owner, int height, int width);
-
-void select_vertices_GPU(uint8_t *grey_img_CPU, uint8_t *result_img, int height, int width);
+void delauney_GPU(Point *owner_map_CPU, vector<Triangle> &triangles_list, int height, int width);
+void select_vertices_GPU(uint8_t *grey_img_CPU, uint8_t *result_image, int height, int width);
+cv::Mat drawLowPoly_GPU(cv::Mat &img);
+void free_gpu_memory();
