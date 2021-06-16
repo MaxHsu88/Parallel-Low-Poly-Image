@@ -2,18 +2,17 @@
 #include <unordered_set>
 #include <stdio.h>
 #include <iostream>
-
 #include <cuda.h>
 #include <curand_kernel.h>
-
+#include <thrust/scan.h>
 #include "opencv2/core.hpp"
 #include "opencv2/highgui.hpp"
 #include "opencv2/imgcodecs.hpp"
 #include "opencv2/imgproc/imgproc.hpp"
-
 #include "point.h"
 #include "triangle.h"
 #include "delauney.h"
+#include "simpleTimer.h"
 
 using namespace std;
 
@@ -52,6 +51,12 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
     }
 }
 
+void init_cuda()
+{
+    int *dummy;
+    cudaMalloc(&dummy, sizeof(int));
+    cudaFree(dummy);
+}
 
 // Most of this code is borrowed from Homework3
 __global__
@@ -175,6 +180,8 @@ void select_vertices_GPU(uint8_t *grey_img_CPU, uint8_t *result_image, int heigh
 {
     int total_pixels = height * width;
 
+    simpleTimer t_mem_alloc("...GPU memory setup");
+
     // GPU memory allocation
     checkCuda( cudaMalloc(&grey_img_GPU, total_pixels * sizeof(uint8_t)) );
     checkCuda( cudaMalloc(&gradient_img_GPU, total_pixels * sizeof(uint8_t)) );
@@ -186,15 +193,29 @@ void select_vertices_GPU(uint8_t *grey_img_CPU, uint8_t *result_image, int heigh
     // Init for owner
     checkCuda( cudaMemset(owner_map_GPU, -1, total_pixels * sizeof(Point)) );
 
+    t_mem_alloc.GetDuration();
+
+    simpleTimer t_edge_detect("...Edge detection");
+
     // Edge detection filtering
     int BLOCKSIZE = 32;
     dim3 dimBlock(BLOCKSIZE, BLOCKSIZE, 1);
     dim3 dimGrid(ceil(width/(float)BLOCKSIZE), ceil(height/(float)BLOCKSIZE), 1);
     get_gradient_kernel<<<dimGrid, dimBlock>>>(grey_img_GPU, gradient_img_GPU, height, width);
+    checkCuda( cudaDeviceSynchronize() );
+
+    t_edge_detect.GetDuration();
+
+    simpleTimer t_init_random("...random generators init");
 
     // Init random generators
     int GRIDSIZE = (total_pixels + BLOCKSIZE - 1) / BLOCKSIZE;
     setup_kernel<<<GRIDSIZE, BLOCKSIZE>>>(rand_state);
+    checkCuda( cudaDeviceSynchronize() );
+
+    t_init_random.GetDuration();
+
+    simpleTimer t_select_vert("...Vertices selection");
 
     // Selecting vertices
     float gradThreshold = 20;
@@ -203,12 +224,13 @@ void select_vertices_GPU(uint8_t *grey_img_CPU, uint8_t *result_image, int heigh
     float boundProb = 0.1;
     select_vertices_kernel<<<GRIDSIZE, BLOCKSIZE>>>(gradient_img_GPU, owner_map_GPU, rand_state, 
                             height, width, gradThreshold, edgeProb, nonEdgeProb, boundProb);
+    checkCuda( cudaDeviceSynchronize() );
 
-    cudaDeviceSynchronize();
+    t_select_vert.GetDuration();
 
     // ********************************
     // for testing output result
-    checkCuda( cudaMemcpy(result_image, gradient_img_GPU, total_pixels * sizeof(uint8_t), cudaMemcpyDeviceToHost) );
+    // checkCuda( cudaMemcpy(result_image, gradient_img_GPU, total_pixels * sizeof(uint8_t), cudaMemcpyDeviceToHost) );
     // ********************************
 }
 
@@ -389,6 +411,8 @@ void delauney_GPU(Point *owner_map_CPU, vector<Triangle> &triangles_list, int he
     dim3 dimBlock(BLOCKSIZE, BLOCKSIZE, 1);
     dim3 dimGrid(ceil(width/(float)BLOCKSIZE), ceil(height/(float)BLOCKSIZE), 1);
 
+    simpleTimer t_jump_flood("...Jump flooding");
+
     // **************************************
     // Jump-Flooding algorithm for constructing voronoi diagram
     // Reference: https://citeseerx.ist.psu.edu/viewdoc/download?doi=10.1.1.101.8568&rep=rep1&type=pdf
@@ -402,6 +426,8 @@ void delauney_GPU(Point *owner_map_CPU, vector<Triangle> &triangles_list, int he
         checkCuda( cudaDeviceSynchronize() );
     }
 
+    t_jump_flood.GetDuration();
+
     // **************************************
     // Building triangles from the voronoi diagram
     // (1) get triangle count for each pixel
@@ -409,39 +435,71 @@ void delauney_GPU(Point *owner_map_CPU, vector<Triangle> &triangles_list, int he
     // (3) perform triangulation
     // **************************************
 
+    simpleTimer t_build_tri("...Building triangles");
+
+    simpleTimer t_count("......Counting triangles");
+
+    // **************************************
     // (1) get triangle count for each pixel
+    // **************************************
     checkCuda( cudaMalloc(&triangle_count_GPU, total_pixels * sizeof(int)) );
     triangle_count_kernel<<<dimGrid, dimBlock>>>(triangle_count_GPU, owner_map_GPU, height, width);
+    checkCuda( cudaDeviceSynchronize() );
 
+    t_count.GetDuration();
+
+    simpleTimer t_prefix("......Counting prefix sum");
+
+    // **************************************
     // (2) compute prefix sum of the number of triangles
-    // Note: Get prefix sum in CPU side (TODO)
-    int *triangle_prefix_sum_CPU = (int *)malloc(total_pixels * sizeof(int));
-    checkCuda( cudaMemcpy(triangle_prefix_sum_CPU, triangle_count_GPU, total_pixels * sizeof(int), cudaMemcpyDeviceToHost) );
-    checkCuda( cudaDeviceSynchronize() );
-    for (int i = 1; i < total_pixels; i++)
-    {
-        triangle_prefix_sum_CPU[i] = triangle_prefix_sum_CPU[i] + triangle_prefix_sum_CPU[i-1];
-    }
-    total_triangles = triangle_prefix_sum_CPU[total_pixels-1];
-    checkCuda( cudaMalloc(&triangle_prefix_sum_GPU, total_pixels * sizeof(int)) );
-    checkCuda( cudaMemcpy(triangle_prefix_sum_GPU, triangle_prefix_sum_CPU, total_pixels * sizeof(int), cudaMemcpyHostToDevice) );
-    checkCuda( cudaDeviceSynchronize() );
+    // **************************************
+    // Option 1: Get prefix sum in CPU side (TODO)
+    // **************************************
+    // int *triangle_prefix_sum_CPU = (int *)malloc(total_pixels * sizeof(int));
+    // checkCuda( cudaMemcpy(triangle_prefix_sum_CPU, triangle_count_GPU, total_pixels * sizeof(int), cudaMemcpyDeviceToHost) );
+    // checkCuda( cudaDeviceSynchronize() );
+    // for (int i = 1; i < total_pixels; i++)
+    // {
+    //     triangle_prefix_sum_CPU[i] = triangle_prefix_sum_CPU[i] + triangle_prefix_sum_CPU[i-1];
+    // }
+    // total_triangles = triangle_prefix_sum_CPU[total_pixels-1];
+    // checkCuda( cudaMalloc(&triangle_prefix_sum_GPU, total_pixels * sizeof(int)) );
+    // checkCuda( cudaMemcpy(triangle_prefix_sum_GPU, triangle_prefix_sum_CPU, total_pixels * sizeof(int), cudaMemcpyHostToDevice) );
+    // checkCuda( cudaDeviceSynchronize() );
+    // free(triangle_prefix_sum_CPU);
 
+    // **************************************
+    // Option 2: Using thrust library
+    // **************************************
+    checkCuda( cudaMalloc(&triangle_prefix_sum_GPU, total_pixels * sizeof(int)) );
+    thrust::inclusive_scan(thrust::device, triangle_count_GPU, triangle_count_GPU + total_pixels, triangle_prefix_sum_GPU);
+    checkCuda( cudaMemcpy(&total_triangles, &triangle_prefix_sum_GPU[total_pixels-1], sizeof(int), cudaMemcpyDeviceToHost) );
+    
+    t_prefix.GetDuration();
+
+    simpleTimer t_tri("......Triangulation");
+
+    // **************************************
     // (3) perform triangulation
+    // **************************************
     checkCuda( cudaMalloc(&triangles_GPU, total_triangles * sizeof(Triangle)) );
     triangle_generate_kernel<<<dimGrid, dimBlock>>>(triangles_GPU, owner_map_GPU, triangle_prefix_sum_GPU, height, width);
+    checkCuda( cudaDeviceSynchronize() );
 
-    free(triangle_prefix_sum_CPU);
+    t_tri.GetDuration();
+
+    t_build_tri.GetDuration();
+
+    std::cout << "total number of triangles processed: " << total_triangles << std::endl;
 
     // ********************************
     // for testing output result
-    checkCuda( cudaMemcpy(owner_map_CPU, owner_map_GPU, sizeof(Point) * total_pixels, cudaMemcpyDeviceToHost) );
-
-    Triangle *triangles_CPU = (Triangle *)malloc(sizeof(Triangle) * total_triangles);
-    checkCuda( cudaMemcpy(triangles_CPU, triangles_GPU, sizeof(Triangle) * total_triangles, cudaMemcpyDeviceToHost) );
-    for (int i = 0; i < total_triangles; i++)
-        triangles_list.push_back(triangles_CPU[i]);
-    free(triangles_CPU);
+    // checkCuda( cudaMemcpy(owner_map_CPU, owner_map_GPU, sizeof(Point) * total_pixels, cudaMemcpyDeviceToHost) );
+    // Triangle *triangles_CPU = (Triangle *)malloc(sizeof(Triangle) * total_triangles);
+    // checkCuda( cudaMemcpy(triangles_CPU, triangles_GPU, sizeof(Triangle) * total_triangles, cudaMemcpyDeviceToHost) );
+    // for (int i = 0; i < total_triangles; i++)
+    //     triangles_list.push_back(triangles_CPU[i]);
+    // free(triangles_CPU);
     // ********************************
 }
 
@@ -519,7 +577,7 @@ cv::Mat drawLowPoly_GPU(cv::Mat &img)
     checkCuda( cudaMalloc(&color_img_GPU, sizeof(uint8_t) * total_pixels * 3) );
     checkCuda( cudaMemcpy(orig_img_GPU, img.data, sizeof(uint8_t) * total_pixels * 3, cudaMemcpyHostToDevice) );
 
-    int BLOCKSIZE = 256;
+    int BLOCKSIZE = 64;
     int GRIDSIZE = (total_triangles + BLOCKSIZE - 1) / BLOCKSIZE;
     draw_lowpoly_kernel<<<GRIDSIZE, BLOCKSIZE>>>(orig_img_GPU, color_img_GPU, triangles_GPU, total_triangles, width);
     checkCuda( cudaDeviceSynchronize() );

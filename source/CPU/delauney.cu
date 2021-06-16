@@ -5,6 +5,8 @@
 #include "triangle.h"
 #include "delauney.h"
 
+#include "simpleTimer.h"
+
 
 // Get the ceiling of the value which is power of 2
 // Reference: https://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2
@@ -34,6 +36,8 @@ inline bool out_of_bound(Point p, int height, int width)
 
 vector<Triangle> Delauney(vector<Point> &vertices, vector<int> &owner, int height, int width)
 {
+    simpleTimer t_jump_flood("...Jump flooding");
+
     // All 8 directions to check from the vertex
     const Point all_dir[8] = {Point(1, 0), Point(1, 1), Point(0, 1), Point(-1, 1),
                                 Point(-1, 0), Point(-1, -1), Point(0, -1), Point(1, -1)};
@@ -90,6 +94,10 @@ vector<Triangle> Delauney(vector<Point> &vertices, vector<int> &owner, int heigh
         }
     }
 
+    t_jump_flood.GetDuration();
+
+    simpleTimer t_build_tri("...Building triangles");
+
     // **************************************
     // Building triangles from the voronoi diagram
     // **************************************
@@ -140,6 +148,8 @@ vector<Triangle> Delauney(vector<Point> &vertices, vector<int> &owner, int heigh
             }
         }
     }
+
+    t_build_tri.GetDuration();
 
     return triangles;
 }

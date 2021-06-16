@@ -1,8 +1,8 @@
 CXX := g++
 CXXFLAGS := -std=c++11 -O3
-NVFLAGS := $(CXXFLAGS)
+NVFLAGS := $(CXXFLAGS) # --rdc-true
 TARGET := Solver
-OBJS := point.o triangle.o delauney.o img_utils.o LowPolySolver.o
+OBJS :=  timer.o point.o triangle.o delauney.o img_utils.o LowPolySolver.o
 CV2FLAGS := `pkg-config --cflags --libs opencv`
 
 .PHONY: all
@@ -19,13 +19,16 @@ img_utils.o: img_utils.cu
 	nvcc -c $(NVFLAGS) img_utils.cu -o img_utils.o $(CV2FLAGS)
 
 delauney.o: delauney.cu
-	nvcc -c $(NVFLAGS) delauney.cu -o delauney.o
+	nvcc -c $(NVFLAGS) delauney.cu -o delauney.o $(CV2FLAGS)
 
 point.o: point.cu
 	nvcc -c $(NVFLAGS) point.cu -o point.o
 
 triangle.o: triangle.cu
 	nvcc -c $(NVFLAGS) triangle.cu -o triangle.o
+
+timer.o: simpleTimer.cpp
+	nvcc -c $(NVFLAGS) simpleTimer.cpp -o timer.o
 
 .PHONY: clean
 clean:
