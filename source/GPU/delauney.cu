@@ -5,6 +5,7 @@
 #include <cuda.h>
 #include <curand_kernel.h>
 #include <thrust/scan.h>
+#include <thrust/sort.h>
 #include "opencv2/core.hpp"
 #include "opencv2/highgui.hpp"
 #include "opencv2/imgcodecs.hpp"
@@ -187,6 +188,8 @@ void select_vertices_GPU(uint8_t *grey_img_CPU, uint8_t *result_image, int heigh
     checkCuda( cudaMalloc(&gradient_img_GPU, total_pixels * sizeof(uint8_t)) );
     checkCuda( cudaMalloc(&owner_map_GPU, total_pixels * sizeof(Point)) );
     checkCuda( cudaMalloc(&rand_state, total_pixels * sizeof(curandState)) );
+    checkCuda( cudaMalloc(&orig_img_GPU, sizeof(uint8_t) * total_pixels * 3) );
+    checkCuda( cudaMalloc(&color_img_GPU, sizeof(uint8_t) * total_pixels * 3) );
 
     // Data transfer
     checkCuda( cudaMemcpy(grey_img_GPU, grey_img_CPU, total_pixels * sizeof(uint8_t), cudaMemcpyHostToDevice) );
@@ -563,7 +566,66 @@ void draw_lowpoly_kernel(uint8_t *orig_img, uint8_t *color_img, Triangle *triang
             }
         }
     }
+}
 
+__global__
+void draw_lowpoly_stride_kernel(uint8_t *orig_img, uint8_t *color_img, Triangle *triangles, int total_triangles, int width)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx > total_triangles)
+        return;
+
+    for (int i = idx; i < total_triangles; i += gridDim.x * blockDim.x)
+    {
+        Triangle triangle = triangles[i];
+        // Use center pixel of a triangle to color it
+        Point pt_c = triangle.get_center();
+        // Find bounding box region of a triangle
+        int minX = min(triangle.points[0].x, min(triangle.points[1].x, triangle.points[2].x));
+        int maxX = max(triangle.points[0].x, max(triangle.points[1].x, triangle.points[2].x));
+        int minY = min(triangle.points[0].y, min(triangle.points[1].y, triangle.points[2].y));
+        int maxY = max(triangle.points[0].y, max(triangle.points[1].y, triangle.points[2].y));
+
+        int img_idx = (pt_c.y * width + pt_c.x) * 3;
+        // Iterate for the pixels in the box region
+        for (int y = minY; y <= maxY; y++)
+        {
+            for (int x = minX; x <= maxX; x++)
+            {
+                Point pt_tmp(x, y);
+                // Check if the pixels lies in the triangle
+                if (PointInTriangle(pt_tmp, triangle.points[0], triangle.points[1], triangle.points[2]))
+                {
+                    int tri_img_idx = (y * width + x) * 3;
+                    // Assign the color of ceter pixel of the triangle to current pixel
+                    color_img[tri_img_idx] = orig_img[img_idx];
+                    color_img[tri_img_idx + 1] = orig_img[img_idx + 1];
+                    color_img[tri_img_idx + 2] = orig_img[img_idx + 2];
+                }
+            }
+        }
+    }
+}
+
+
+__global__
+void compute_area_kernel(int *triangle_area, Triangle *triangles, int total_triangles)
+{
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx > total_triangles)
+        return;
+
+    Triangle triangle = triangles[idx];
+    // Find bounding box region of a triangle
+    int minX = min(triangle.points[0].x, min(triangle.points[1].x, triangle.points[2].x));
+    int maxX = max(triangle.points[0].x, max(triangle.points[1].x, triangle.points[2].x));
+    int minY = min(triangle.points[0].y, min(triangle.points[1].y, triangle.points[2].y));
+    int maxY = max(triangle.points[0].y, max(triangle.points[1].y, triangle.points[2].y));
+    // Get the length of two dimensions
+    int x_length = ((maxX - minX) < 1) ? 1 : maxX - minX;
+    int y_length = ((maxY - minY) < 1) ? 1 : maxY - minY;
+
+    triangle_area[idx] = x_length * y_length;
 }
 
 
@@ -573,13 +635,28 @@ cv::Mat drawLowPoly_GPU(cv::Mat &img)
     int width = img.cols;
     int total_pixels = height * width;
 
-    checkCuda( cudaMalloc(&orig_img_GPU, sizeof(uint8_t) * total_pixels * 3) );
-    checkCuda( cudaMalloc(&color_img_GPU, sizeof(uint8_t) * total_pixels * 3) );
     checkCuda( cudaMemcpy(orig_img_GPU, img.data, sizeof(uint8_t) * total_pixels * 3, cudaMemcpyHostToDevice) );
 
     int BLOCKSIZE = 64;
     int GRIDSIZE = (total_triangles + BLOCKSIZE - 1) / BLOCKSIZE;
+
+    // ********************************
+    // Compute each triangle area
+    int *triangle_area_GPU;
+    cudaMalloc(&triangle_area_GPU, sizeof(int) * total_triangles);
+    compute_area_kernel<<<GRIDSIZE, BLOCKSIZE>>>(triangle_area_GPU, triangles_GPU, total_triangles);
+    checkCuda( cudaDeviceSynchronize() );
+    // Sort the triangle first
+    thrust::sort_by_key(thrust::device, triangle_area_GPU, triangle_area_GPU + total_triangles, triangles_GPU);
+    cudaFree(triangle_area_GPU);
+    // ********************************
+
+    // Normal Version
     draw_lowpoly_kernel<<<GRIDSIZE, BLOCKSIZE>>>(orig_img_GPU, color_img_GPU, triangles_GPU, total_triangles, width);
+
+    // Strided Version
+    // draw_lowpoly_stride_kernel<<<20 * 32, 64>>>(orig_img_GPU, color_img_GPU, triangles_GPU, total_triangles, width);
+
     checkCuda( cudaDeviceSynchronize() );
 
     cv::Mat color_img;
