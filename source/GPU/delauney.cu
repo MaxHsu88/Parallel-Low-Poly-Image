@@ -54,9 +54,7 @@ inline void gpuAssert(cudaError_t code, const char *file, int line, bool abort=t
 
 void init_cuda()
 {
-    int *dummy;
-    cudaMalloc(&dummy, sizeof(int));
-    cudaFree(dummy);
+    cudaFree(0);
 }
 
 // Most of this code is borrowed from Homework3
@@ -179,26 +177,14 @@ void select_vertices_kernel(uint8_t *grad, Point *owner_map, curandState *rand_s
 
 void select_vertices_GPU(uint8_t *grey_img_CPU, uint8_t *result_image, int height, int width)
 {
+    simpleTimer t_edge_detect("...Edge detection");
+
     int total_pixels = height * width;
-
-    simpleTimer t_mem_alloc("...GPU memory setup");
-
-    // GPU memory allocation
-    checkCuda( cudaMalloc(&grey_img_GPU, total_pixels * sizeof(uint8_t)) );
-    checkCuda( cudaMalloc(&gradient_img_GPU, total_pixels * sizeof(uint8_t)) );
-    checkCuda( cudaMalloc(&owner_map_GPU, total_pixels * sizeof(Point)) );
-    checkCuda( cudaMalloc(&rand_state, total_pixels * sizeof(curandState)) );
-    checkCuda( cudaMalloc(&orig_img_GPU, sizeof(uint8_t) * total_pixels * 3) );
-    checkCuda( cudaMalloc(&color_img_GPU, sizeof(uint8_t) * total_pixels * 3) );
 
     // Data transfer
     checkCuda( cudaMemcpy(grey_img_GPU, grey_img_CPU, total_pixels * sizeof(uint8_t), cudaMemcpyHostToDevice) );
     // Init for owner
     checkCuda( cudaMemset(owner_map_GPU, -1, total_pixels * sizeof(Point)) );
-
-    t_mem_alloc.GetDuration();
-
-    simpleTimer t_edge_detect("...Edge detection");
 
     // Edge detection filtering
     int BLOCKSIZE = 32;
@@ -666,6 +652,19 @@ cv::Mat drawLowPoly_GPU(cv::Mat &img)
     return color_img;
 }
 
+
+void setup_gpu_memory(int height, int width)
+{
+    int total_pixels = height * width;
+
+    // GPU memory allocation
+    checkCuda( cudaMalloc(&grey_img_GPU, total_pixels * sizeof(uint8_t)) );
+    checkCuda( cudaMalloc(&gradient_img_GPU, total_pixels * sizeof(uint8_t)) );
+    checkCuda( cudaMalloc(&owner_map_GPU, total_pixels * sizeof(Point)) );
+    checkCuda( cudaMalloc(&rand_state, total_pixels * sizeof(curandState)) );
+    checkCuda( cudaMalloc(&orig_img_GPU, sizeof(uint8_t) * total_pixels * 3) );
+    checkCuda( cudaMalloc(&color_img_GPU, sizeof(uint8_t) * total_pixels * 3) );
+}
 
 
 void free_gpu_memory()

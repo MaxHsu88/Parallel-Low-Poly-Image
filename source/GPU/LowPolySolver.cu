@@ -36,6 +36,12 @@ int main(int argc, char **argv)
 
     cout << "height: " << height << ", width: " << width << endl;
 
+    simpleTimer t_mem_alloc("GPU memory setup");
+
+    setup_gpu_memory(height, width);
+
+    t_mem_alloc.GetDuration();
+
     simpleTimer t_edge("Edge detection & select vertices");
 
     cv::Mat img_grey;
