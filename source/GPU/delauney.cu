@@ -304,7 +304,7 @@ void check_triangles(Point *owner_map, int *num_triangles, Point cur_point, Poin
     
     // setup for first point
     int num_colors = 1;
-    test[0] = cur_point;
+    test[0] = owner_map[convert_idx(cur_point, width)];
 
     // test all 4 points
     for (int i = 0; i < 3; i++)
@@ -388,7 +388,7 @@ void triangle_generate_kernel(Triangle *triangles, Point *owner_map, int *prefix
             triangle2 = Triangle(owner_map[convert_idx(test[1], width)],
                                 owner_map[convert_idx(test[2], width)],
                                 owner_map[convert_idx(test[3], width)]);
-            int triangle_index = prefix_sum[y * width + x] - 1;
+            int triangle_index = prefix_sum[y * width + x] - 2;
             triangles[triangle_index] = triangle1;
             triangles[triangle_index + 1] = triangle2;
         }
