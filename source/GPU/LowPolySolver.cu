@@ -51,7 +51,9 @@ int main(int argc, char **argv)
     uint8_t *gradient_img = (uint8_t *)malloc(sizeof(uint8_t) * totalPixel);
     uint8_t *grey_img = img_grey.data;
 
-    select_vertices_GPU(grey_img, gradient_img, height, width);
+    Point *vert_img = (Point *)malloc(sizeof(Point) * totalPixel);
+
+    select_vertices_GPU(grey_img, gradient_img, vert_img, height, width);
 
     t_edge.GetDuration();
 
@@ -59,6 +61,12 @@ int main(int argc, char **argv)
     // for output edge image
     // cv::Mat edge_output = drawEdges(gradient_img, height, width);
     // cv::imwrite( output_folder + "/GPU_edge.jpg", edge_output );
+    // ****************************
+
+    // ****************************
+    // for output vertices image
+    // cv::Mat vertices_output = drawVert(vert_img, height, width);
+    // cv::imwrite( output_folder + "/GPU_vertex.jpg", vertices_output );
     // ****************************
 
     simpleTimer t_delauney("Delauney Triangulation");
@@ -93,6 +101,7 @@ int main(int argc, char **argv)
 
     free(gradient_img);
     free(owner_map_CPU);
+    free(vert_img);
     free_gpu_memory();
 
     t_whole.GetDuration();

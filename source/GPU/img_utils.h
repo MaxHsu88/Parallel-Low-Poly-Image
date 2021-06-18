@@ -14,5 +14,5 @@ using namespace std;
 // cv::Mat drawLowPoly(vector<Triangle> &triangles, cv::Mat &orig_img, int height, int width);
 cv::Mat drawTriangles(vector<Triangle> &triangles, cv::Mat &img, bool add);
 cv::Mat drawEdges(uint8_t* gradient_img, int height, int width);
-// cv::Mat drawVert(vector<Point> &vertices, int height, int width);
+cv::Mat drawVert(Point *vert_img, int height, int width);
 cv::Mat drawVoroni(Point *owner, int height, int width);

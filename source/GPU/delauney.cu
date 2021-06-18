@@ -175,7 +175,7 @@ void select_vertices_kernel(uint8_t *grad, Point *owner_map, curandState *rand_s
 }
 
 
-void select_vertices_GPU(uint8_t *grey_img_CPU, uint8_t *result_image, int height, int width)
+void select_vertices_GPU(uint8_t *grey_img_CPU, uint8_t *result_image, Point *vert_img, int height, int width)
 {
     simpleTimer t_edge_detect("...Edge detection");
 
@@ -220,6 +220,7 @@ void select_vertices_GPU(uint8_t *grey_img_CPU, uint8_t *result_image, int heigh
     // ********************************
     // for testing output result
     // checkCuda( cudaMemcpy(result_image, gradient_img_GPU, total_pixels * sizeof(uint8_t), cudaMemcpyDeviceToHost) );
+    // checkCuda( cudaMemcpy(vert_img, owner_map_GPU, total_pixels * sizeof(Point), cudaMemcpyDeviceToHost) );
     // ********************************
 }
 
@@ -297,7 +298,7 @@ void jump_flooding_kernel(Point *owner_map, int step_size, int height, int width
 
 
 __device__
-void check_triangles(Point *owner_map, int *num_triangles, Point cur_point, Point test[])
+void check_triangles(Point *owner_map, int *num_triangles, Point cur_point, Point test[], int width)
 {
     Point corner_dir[3] = {Point(0, 1), Point(1, 0), Point(1, 1)};
     
@@ -314,7 +315,7 @@ void check_triangles(Point *owner_map, int *num_triangles, Point cur_point, Poin
         for (int j = 0; j < num_colors; j++)
         {
             // same point can be found in buffer
-            if (neighbor_point == test[j])
+            if (owner_map[convert_idx(neighbor_point, width)] == test[j])
             {
                 is_diff = false;
                 break;
@@ -322,7 +323,7 @@ void check_triangles(Point *owner_map, int *num_triangles, Point cur_point, Poin
         }
         if (is_diff)
         {
-            test[num_colors] = neighbor_point;
+            test[num_colors] = owner_map[convert_idx(neighbor_point, width)];
             num_colors++;
         }
     }
@@ -348,8 +349,10 @@ void triangle_count_kernel(int *count, Point *owner_map, int height, int width)
         int num_triangles = 0;
         Point cur_point(x, y);
         Point test[4] = {Point(-1,-1), Point(-1,-1), Point(-1,-1), Point(-1,-1)};
-        check_triangles(owner_map, &num_triangles, cur_point, test);
+        check_triangles(owner_map, &num_triangles, cur_point, test, width);
         count[y * width + x] = num_triangles;
+    } else {
+        count[y * width + x] = 0;
     }
 }
 
@@ -365,7 +368,7 @@ void triangle_generate_kernel(Triangle *triangles, Point *owner_map, int *prefix
         int num_triangles = 0;
         Point cur_point(x, y);
         Point test[4] = {Point(-1,-1), Point(-1,-1), Point(-1,-1), Point(-1,-1)};
-        check_triangles(owner_map, &num_triangles, cur_point, test);
+        check_triangles(owner_map, &num_triangles, cur_point, test, width);
 
         if (num_triangles == 1)
         {

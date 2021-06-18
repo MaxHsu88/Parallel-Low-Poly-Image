@@ -84,18 +84,22 @@ cv::Mat drawEdges(uint8_t* gradient_img, int height, int width)
 
 
 // Draw the selected vertex images
-// cv::Mat drawVert(vector<Point> &vertices, int height, int width)
-// {
-//     cv::Mat vertex_output = cv::Mat(height, width, CV_8UC1, cv::Scalar(0));
-//     for (int i = 0; i < vertices.size(); ++i)
-//     {
-//         Point p = vertices[i];
-//         int x = p.x;
-//         int y = p.y;
-//         vertex_output.at<uchar>(y, x) = 255;
-//     }
-//     return vertex_output;
-// }
+cv::Mat drawVert(Point *vert_img, int height, int width)
+{
+    int total_pixels = height * width;
+    cv::Mat vertex_output = cv::Mat(height, width, CV_8UC1, cv::Scalar(0));
+    for (int i = 0; i < total_pixels; ++i)
+    {
+        Point p = vert_img[i];
+        if (!p.isInvalid())
+        {
+            int x = p.x;
+            int y = p.y;
+            vertex_output.at<uchar>(y, x) = 255;
+        }
+    }
+    return vertex_output;
+}
 
 
 // Draw the voroni images
