@@ -1,4 +1,4 @@
-# Parallel-Low-Poly-Image
+# Parallel-Low-Poly-Image-Generation
 
 ![Burger](supplement/lowpoly_mix.gif)
 
