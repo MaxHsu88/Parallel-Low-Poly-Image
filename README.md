@@ -1,6 +1,6 @@
 # Parallel-Low-Poly-Image
 
-![Burger](supplement/burger.jpg)
+![Burger](supplement/lowpoly_mix.gif)
 
 ## Project Intro :dart:
 
